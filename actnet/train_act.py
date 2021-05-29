@@ -3,48 +3,72 @@ import sys
 import argparse
 import os
 import time
+import random
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import torch.backends.cudnn as cudnn
 
 import torchvision.models as models
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 
 from common.args import parse_args
-from common.util import load_few_data, load_large_data, load_test_data
+from common.util import load_large_data
 from model import get_model
 
+def sample_per_class(X, y):
+    '''
+    X, Tensor (cls, num_sample, num_features/units)
+    y, Tensor (cls,)
+    '''
+    cls_num = X.shape[0]
+    num_sample = X.shape[1]
+    data_list = []
+    for i in range(cls_num):
+        sample = X[i, np.random.randint(num_sample)]
+        data_list.append(sample.reshape(1, -1))
+    X_hat = torch.cat(data_list, dim=0) # (C, u)
+    
+    if y is not None:
+        # shuffle
+        index = np.arange(0, cls_num)
+        np.random.shuffle(index)
+        return X_hat[index].to(device), y[index].to(device)
+    else:
+        # non shuffle version
+        return X_hat, None
 
-def shuffle(X, y, shuffle_parts):
-    chunk_size = int(len(X) / shuffle_parts)
-    shuffled_range = list(range(chunk_size))
 
-    X_buffer = np.copy(X[0:chunk_size])
-    y_buffer = np.copy(y[0:chunk_size])
+def sample_statistics(X, p_mean=0.95):
+    X = torch.as_tensor(X)
 
-    for k in range(shuffle_parts):
-        np.random.shuffle(shuffled_range)
-        for i in range(chunk_size):
-            X_buffer[i] = X[k * chunk_size + shuffled_range[i]]
-            y_buffer[i] = y[k * chunk_size + shuffled_range[i]]
+    cls_num = X.shape[0]
+    X_mean = X.mean(dim=1) # (C, u)
+    X_hat, _ = sample_per_class(X, None) # (C, u)
+    proba = torch.ones(X.shape[0]) * p_mean
+    sample = torch.bernoulli(proba)
+    for i in range(len(sample)):
+        if sample[i] < 0.5:
+            X_mean[i] = X_hat[i]
 
-        X[k * chunk_size:(k + 1) * chunk_size] = X_buffer
-        y[k * chunk_size:(k + 1) * chunk_size] = y_buffer
-
-    return X, y
+    index = np.arange(0, cls_num)
+    np.random.shuffle(index)
+    return X_mean[index].to(device)
 
 
 def train_epoch(args, model, X, y, optimizer): # Training Process
     model.train()
     loss, acc = 0.0, 0.0
-    num_batches = args.batch_size 
-    for i in range(num_batches):
-        T, targ = sample_per_class(X)  # (C, u)
-        S = sample_statistics(X) # (C, u)
+    losses = []
+    acces = []
+    for i in range(args.num_batches):
+        optimizer.zero_grad()
+        T, targ = sample_per_class(X, y)  # (C, u)
+        S = sample_statistics(X, args.p_mean) # (C, u)
         loss_, acc_ = model(S, T, targ) # (C, u)
 
         loss_.backward()
@@ -52,30 +76,38 @@ def train_epoch(args, model, X, y, optimizer): # Training Process
 
         loss += loss_.cpu().data.numpy()
         acc += acc_.cpu().data.numpy()
-    loss /= num_batches
-    acc /= num_batches
-    return acc, loss
-    
-def valid_epoch(args, model, X, y, alexnet): # Valid Process
+        losses.append(loss_.cpu().data.numpy())
+        acces.append(acc_.cpu().data.numpy())
+
+    loss /= args.num_batches
+    acc /= args.num_batches
+    return acc, loss, acces, losses
+
+
+def valid_epoch(args, model, alexnet, loader): # Valid Process
     model.eval()
     loss, acc = 0.0, 0.0
-    st, ed, times = 0, args.batch_size, 0
-    while st < len(X) and ed <= len(X):
-        X_batch, y_batch = torch.from_numpy(X[st:ed]).to(device), torch.from_numpy(y[st:ed]).to(device)
-        with torch.no_grad(): # errata
-            loss_, acc_ = model(X_batch, y_batch)
+    num_test = args.num_shots - args.val_num_shots
+    for i, (images, target) in enumerate(loader):
+        assert i == 0
+        with torch.no_grad():
+            target = target.to(device)
+            features = alexnet(images) # (Big_B, u)
+            assert features.shape[0] % args.num_shots == 0
+            features = features.reshape(-1, args.num_shots, args.num_units) # (C, shot, u)
+            features = features.to(device)
+            target = target.reshape(-1, args.num_shots)[:, :num_test].flatten() # (class_num * num_test, )
+            shoters = features[:, :args.val_num_shots].to(device) # (class_num, vns, u)
+            testers = features[:, args.val_num_shots:].reshape(-1, args.num_units).to(device) # (class_num, vns, u) -> # (cls_num * vns, u)    
+            loss_, acc_ = model(shoters, testers, target, few=True, shot=args.val_num_shots)
 
         loss += loss_.cpu().data.numpy()
         acc += acc_.cpu().data.numpy()
 
-        st, ed = ed, ed + args.batch_size
-        times += 1
-    loss /= times
-    acc /= times
     return acc, loss
 
 
-def inference(model, X): # Test Process
+def inference(model, X): # Test Process, TODO
     model.eval()
     with torch.no_grad(): # errata
         pred_ = model(torch.from_numpy(X).to(device))
@@ -86,8 +118,12 @@ def main_worker(args):
     # init config
     global device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    alexnet = models.alexnet(pretrained=args.pretrained)
+    print(device)
 
+    alexnet = models.alexnet(pretrained=args.pretrained)
+    new_classifier = nn.Sequential(*list(alexnet.classifier.children())[:-1])
+    alexnet.classifier = new_classifier
+    
     # Data-loader of val and test set
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
@@ -99,32 +135,43 @@ def main_worker(args):
     ])
     val_dataset = datasets.ImageFolder(
         args.few_data_dir,
-        transforms,
+        transform,
     )
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True
+        batch_size=500, shuffle=False,
+        pin_memory=True
     )
-
 
     if not os.path.exists(args.train_dir):
         os.mkdir(args.train_dir)
+    if not os.path.exists(args.log_dir):
+        os.mkdir(args.log_dir)
     if args.is_train:
         X_train, y_train = load_large_data(args.large_data_dir)
-        X_val, y_val = load_few_data(args.few_data_dir) # TODO
-        mlp_model = get_model()
+
+        train_loss_batch = np.array([], dtype=np.float32)
+        train_acc_batch = np.array([], dtype=np.float32)
+        train_loss_epoch = np.array([], dtype=np.float32)
+        train_acc_epoch = np.array([], dtype=np.float32)
+        val_loss_epoch = np.array([], dtype=np.float32)
+        val_acc_epoch = np.array([], dtype=np.float32)
+
+        mlp_model = get_model(num_units=args.num_units)
         mlp_model.to(device)
         print(mlp_model)
+        batch_size = X_train.shape[0] # 1000
+        print('batch_size: ', batch_size)
         optimizer = optim.Adam(mlp_model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
             
         pre_losses = [1e18] * 3
         best_val_acc = 0.0
+        print('Start iterations...')
         for epoch in range(1, args.num_epochs+1):
             start_time = time.time()
-            train_acc, train_loss = train_epoch(args, mlp_model, X_train, y_train, optimizer)
+            train_acc, train_loss, batches_acc, batches_loss = train_epoch(args, mlp_model, X_train, y_train, optimizer)
 
-            val_acc, val_loss = valid_epoch(mlp_model, X_val, y_val)
+            val_acc, val_loss = valid_epoch(args, mlp_model, alexnet, val_loader)
 
             if val_acc >= best_val_acc:
                 best_val_acc = val_acc
@@ -147,14 +194,31 @@ def main_worker(args):
             # print("  test loss:                     " + str(test_loss))
             # print("  test accuracy:                 " + str(test_acc))
 
+            train_loss_epoch = np.append(train_loss_epoch, train_loss)
+            train_acc_epoch = np.append(train_acc_epoch, train_acc)
+            val_loss_epoch = np.append(val_loss_epoch, val_loss)
+            val_acc_epoch = np.append(val_acc_epoch, val_acc)
+            train_loss_batch = np.append(train_loss_batch, np.array(batches_loss))
+            train_acc_batch = np.append(train_acc_batch, np.array(batches_acc))
+
             if train_loss > max(pre_losses):
                 for param_group in optimizer.param_groups:
                     param_group['lr'] = param_group['lr'] * 0.9995
             pre_losses = pre_losses[1:] + [train_loss]
 
+        filelist = ['train_loss_batch.npy', 'train_loss_epoch.npy', 'val_loss_epoch.npy',
+            'train_acc_batch.npy', 'train_acc_epoch.npy', 'val_acc_epoch.npy']
+        np.save(os.path.join(args.log_dir, filelist[0]), train_loss_batch)
+        np.save(os.path.join(args.log_dir, filelist[1]), train_loss_epoch)
+        np.save(os.path.join(args.log_dir, filelist[2]), val_loss_epoch)
+        np.save(os.path.join(args.log_dir, filelist[3]), train_acc_batch)
+        np.save(os.path.join(args.log_dir, filelist[4]), train_acc_epoch)
+        np.save(os.path.join(args.log_dir, filelist[5]), val_acc_epoch)
+
     else:
         mlp_model = get_model()
         mlp_model.to(device)
+        # TODO
         model_path = os.path.join(args.train_dir, 'checkpoint_%d.pth.tar' % args.inference_version)
         if os.path.exists(model_path):
             mlp_model = torch.load(model_path)
