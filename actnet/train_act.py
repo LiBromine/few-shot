@@ -40,10 +40,10 @@ def sample_per_class(X, y):
         return X_hat[index].to(device), y[index].to(device)
     else:
         # non shuffle version
-        return X_hat, None
+        return X_hat, y
 
 
-def sample_statistics(X, p_mean=0.95):
+def sample_statistics(X, y, p_mean=0.95):
     X = torch.as_tensor(X)
 
     cls_num = X.shape[0]
@@ -55,9 +55,15 @@ def sample_statistics(X, p_mean=0.95):
         if sample[i] < 0.5:
             X_mean[i] = X_hat[i]
 
-    index = np.arange(0, cls_num)
-    np.random.shuffle(index)
-    return X_mean[index].to(device)
+    data = torch.zeros_like(X_mean)
+    label = torch.zeros_like(y)
+    for i in range(len(sample)):
+        data[y[i].int()] = X_mean[i]
+
+    # print('S label: ', label)
+    # index = np.arange(0, cls_num)
+    # np.random.shuffle(index)
+    return data.to(device)
 
 
 def train_epoch(args, model, X, y, optimizer): # Training Process
@@ -68,7 +74,7 @@ def train_epoch(args, model, X, y, optimizer): # Training Process
     for i in range(args.num_batches):
         optimizer.zero_grad()
         T, targ = sample_per_class(X, y)  # (C, u)
-        S = sample_statistics(X, args.p_mean) # (C, u)
+        S = sample_statistics(X, y, args.p_mean) # (C, u)
         loss_, acc_ = model(S, T, targ) # (C, u)
 
         loss_.backward()
@@ -123,6 +129,8 @@ def main_worker(args):
     alexnet = models.alexnet(pretrained=args.pretrained)
     new_classifier = nn.Sequential(*list(alexnet.classifier.children())[:-1])
     alexnet.classifier = new_classifier
+    for p in alexnet.parameters():
+        p.requires_grad = False
     
     # Data-loader of val and test set
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -162,7 +170,7 @@ def main_worker(args):
         print(mlp_model)
         batch_size = X_train.shape[0] # 1000
         print('batch_size: ', batch_size)
-        optimizer = optim.Adam(mlp_model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
+        optimizer = optim.SGD(mlp_model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, momentum=args.momentum)
             
         pre_losses = [1e18] * 3
         best_val_acc = 0.0

@@ -5,11 +5,13 @@ def parse_args():
 
     parser.add_argument('--num_batches', type=int, default=250,
         help='Batch size for mini-batch training and evaluating. Default: 100')
-    parser.add_argument('--num_epochs', type=int, default=30,
+    parser.add_argument('--num_epochs', type=int, default=50,
         help='Number of training epoch. Default: 20')
     parser.add_argument('--learning_rate', type=float, default=1e-3,
         help='Learning rate during optimization. Default: 1e-3')
     parser.add_argument('--weight_decay', type=float, default=5e-4,
+        help='TODO')
+    parser.add_argument('--momentum', type=float, default=0.9,
         help='TODO')
     parser.add_argument('--drop_rate', type=float, default=0.5,
         help='Drop rate of the Dropout Layer. Default: 0.5')
