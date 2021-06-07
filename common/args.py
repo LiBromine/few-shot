@@ -5,7 +5,7 @@ def parse_args():
 
     parser.add_argument('--num_batches', type=int, default=250,
         help='Batch size for mini-batch training and evaluating. Default: 100')
-    parser.add_argument('--num_epochs', type=int, default=50,
+    parser.add_argument('--num_epochs', type=int, default=300,
         help='Number of training epoch. Default: 20')
     parser.add_argument('--learning_rate', type=float, default=1e-3,
         help='Learning rate during optimization. Default: 1e-3')
@@ -15,7 +15,7 @@ def parse_args():
         help='TODO')
     parser.add_argument('--drop_rate', type=float, default=0.5,
         help='Drop rate of the Dropout Layer. Default: 0.5')
-    parser.add_argument('--is_train', type=bool, default=True,
+    parser.add_argument('--is_train', type=int, default=1,
         help='True to train and False to inference. Default: True')
     # parser.add_argument('--data_dir', type=str, default='../cifar-10_data',
     #     help='Data directory. Default: ../cifar-10_data')
@@ -23,10 +23,12 @@ def parse_args():
         help='Training directory for saving model. Default: ./train')
     parser.add_argument('--inference_version', type=int, default=0,
         help='The version for inference. Set 0 to use latest checkpoint. Default: 0')
-        
+    parser.add_argument('--continue_train', type=int, default=0,
+        help='TODO')
+
     parser.add_argument('--p_mean', type=float, default=0.9,
         help='TODO')
-    parser.add_argument('--val_num_shots', type=int, default=6,
+    parser.add_argument('--val_num_shots', type=int, default=8,
         help='TODO')
     parser.add_argument('--seed', type=int, default=0,
         help='TODO')
@@ -42,9 +44,10 @@ def parse_args():
         help='TODO')
     parser.add_argument('--few_data_dir', type=str, default='../../Proj2/training',
         help='TODO')
-    parser.add_argument('--test_data_dir', type=str, default='../../Proj2/proj2_test_data',
+    parser.add_argument('--test_data_dir', type=str, default='../../Proj2/test',
         help='TODO')
-    parser.add_argument('--log_dir', type=str, default='./log')
+    parser.add_argument('--output', type=str, default='./output.txt',
+        help='TODO')
 
     # Checkpointing
     # parser.add_argument("--exp-name", type=str, default=None, help="name of the experiment")

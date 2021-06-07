@@ -10,12 +10,12 @@ class ActivationNet(nn.Module):
         super().__init__()
         self.phi = nn.Sequential(
             nn.Linear(num_units, num_units),
-            nn.ReLU(),
-            nn.Linear(num_units, num_units),
+            # nn.ReLU(),
+            # nn.Linear(num_units, num_units),
         )
         self.loss = nn.CrossEntropyLoss()
-        torch.nn.init.eye_(self.phi[0].weight)
-        torch.nn.init.eye_(self.phi[2].weight)
+        torch.nn.init.xavier_normal_(self.phi[0].weight)
+        # torch.nn.init.xavier_normal_(self.phi[2].weight)
 
     def forward(self, input, query, y=None, few=False, shot=10):
         if not few: # y (B,)
@@ -44,7 +44,6 @@ class ActivationNet(nn.Module):
             for i in range(logits.shape[1] // shot):
                 max_response = torch.max(logits[:, i * shot: (i + 1) * shot], dim=1, keepdim=True) # (B, shot) -> # (B, 1)
                 max_responses.append(max_response.values)
-            print(len(max_responses))
             logits = torch.cat(max_responses, dim=1) # (B, C)
             pred = torch.argmax(logits, 1) # (B,)
 

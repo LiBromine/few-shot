@@ -113,18 +113,36 @@ def valid_epoch(args, model, alexnet, loader): # Valid Process
     return acc, loss
 
 
-def inference(model, X): # Test Process, TODO
+def inference(args, model, alexnet, val_loader, test_loader): # Test Process, TODO
     model.eval()
-    with torch.no_grad(): # errata
-        pred_ = model(torch.from_numpy(X).to(device))
-    return pred_.cpu().data.numpy()
+    pred = []
+    with torch.no_grad():
+        for i, (images, target) in enumerate(val_loader):
+            assert i == 0
+            target = target.to(device)
+            features = alexnet(images) # (Big_B, u)
+            assert features.shape[0] % args.num_shots == 0
+            features = features.reshape(-1, args.num_shots, args.num_units) # (C, shot, u)
+            features = features.to(device)
+            
+            for j, (testers, _) in enumerate(test_loader):
+                if j % 50 == 0:
+                    print('batch {}'.format(j))
+                testers = alexnet(testers) # (Big_B, u)
+                testers = testers.to(device)
+                pred_ = model(features, testers, y=None, few=True, shot=args.num_shots)
+                pred.append(pred_.cpu().data)
+
+    pred = torch.cat(pred)
+    return pred.numpy()
+
 
 
 def main_worker(args):
     # init config
     global device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(device)
+    print('device: {}'.format(device))
 
     alexnet = models.alexnet(pretrained=args.pretrained)
     new_classifier = nn.Sequential(*list(alexnet.classifier.children())[:-1])
@@ -150,11 +168,19 @@ def main_worker(args):
         batch_size=500, shuffle=False,
         pin_memory=True
     )
+    test_dataset = datasets.ImageFolder(
+        args.test_data_dir,
+        transform,
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=10, shuffle=False,
+        pin_memory=True
+    )
 
+    print("training mode" if args.is_train else "testing mode")
     if not os.path.exists(args.train_dir):
         os.mkdir(args.train_dir)
-    if not os.path.exists(args.log_dir):
-        os.mkdir(args.log_dir)
     if args.is_train:
         X_train, y_train = load_large_data(args.large_data_dir)
 
@@ -167,11 +193,17 @@ def main_worker(args):
 
         mlp_model = get_model(num_units=args.num_units)
         mlp_model.to(device)
-        print(mlp_model)
         batch_size = X_train.shape[0] # 1000
-        print('batch_size: ', batch_size)
+        print('batch_size: ', batch_size)   
+        if args.continue_train:
+            model_path = os.path.join(args.train_dir, 'checkpoint_%d.pth.tar' % args.inference_version)
+            if os.path.exists(model_path):
+                mlp_model = torch.load(model_path)
+                mlp_model.to(device)
+                print('load model: {}'.format(model_path))
+        print(mlp_model)
         optimizer = optim.SGD(mlp_model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay, momentum=args.momentum)
-            
+
         pre_losses = [1e18] * 3
         best_val_acc = 0.0
         print('Start iterations...')
@@ -216,30 +248,44 @@ def main_worker(args):
 
         filelist = ['train_loss_batch.npy', 'train_loss_epoch.npy', 'val_loss_epoch.npy',
             'train_acc_batch.npy', 'train_acc_epoch.npy', 'val_acc_epoch.npy']
-        np.save(os.path.join(args.log_dir, filelist[0]), train_loss_batch)
-        np.save(os.path.join(args.log_dir, filelist[1]), train_loss_epoch)
-        np.save(os.path.join(args.log_dir, filelist[2]), val_loss_epoch)
-        np.save(os.path.join(args.log_dir, filelist[3]), train_acc_batch)
-        np.save(os.path.join(args.log_dir, filelist[4]), train_acc_epoch)
-        np.save(os.path.join(args.log_dir, filelist[5]), val_acc_epoch)
+        log_path = os.path.join(args.train_dir, 'log')
+        if not os.path.exists(log_path):
+            os.mkdir(log_path)
+        np.save(os.path.join(log_path, filelist[0]), train_loss_batch)
+        np.save(os.path.join(log_path, filelist[1]), train_loss_epoch)
+        np.save(os.path.join(log_path, filelist[2]), val_loss_epoch)
+        np.save(os.path.join(log_path, filelist[3]), train_acc_batch)
+        np.save(os.path.join(log_path, filelist[4]), train_acc_epoch)
+        np.save(os.path.join(log_path, filelist[5]), val_acc_epoch)
 
     else:
         mlp_model = get_model()
         mlp_model.to(device)
-        # TODO
         model_path = os.path.join(args.train_dir, 'checkpoint_%d.pth.tar' % args.inference_version)
         if os.path.exists(model_path):
             mlp_model = torch.load(model_path)
+            print('load model: {}'.format(model_path))
+        print(mlp_model)
 
-        X_test = load_test_data(args.test_data_dir)
+        print('Start testing...')
+        pred = inference(args, mlp_model, alexnet, val_loader, test_loader)
+        print('Finish test!')
+        output_path = os.path.join(args.train_dir, args.output)
+        with open(output_path, 'w+') as f:
+            pred = pred.tolist()
+            s = []
+            for y in pred:
+                s.append(str(y + 1))
+            s = '\n'.join(s)
+            f.write(s)
 
-        count = 0
+        # count = 0
         # for i in range(len(X_test)):
         #     test_image = X_test[i].reshape((1, 3 * 32 * 32))
         #     result = inference(mlp_model, test_image)[0]
         #     if result == y_test[i]:
         #         count += 1
-        print("test accuracy: {}".format(float(count) / len(X_test)))
+        # print("test accuracy: {}".format(float(count) / len(X_test)))
 
 
 if __name__ == '__main__':
@@ -248,5 +294,9 @@ if __name__ == '__main__':
         random.seed(args.seed)
         torch.manual_seed(args.seed)
         cudnn.deterministic = True
+
+    torch.set_num_threads(1)
+    OMP_NUM_THREADS=1
+    MKL_NUM_THREADS=1
     
     main_worker(args)
