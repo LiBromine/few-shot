@@ -32,19 +32,25 @@ class ActivationNet(nn.Module):
             pred = torch.argmax(logits, 1) # (B,)
             # print(pred)
         else:
+            print("averge response")
             assert input.shape[-2] == shot
             # input: (C, shot_num, u), query: (B, u), y: (B, ) or None
             num_units = input.shape[-1]
-            W = self.phi(input).reshape(-1, num_units) # (C * shot, u)
+            ### max response mode begin 
+            # W = self.phi(input).reshape(-1, num_units) # (C * shot, u)
+            # W = F.normalize(W, p=2, dim=-1)
+            # query = F.normalize(query, p=2, dim=-1)
+            # logits = query.matmul(W.transpose(0, 1)) # (B, C * shot)
+            # max_responses = []
+            # assert logits.shape[1] % shot == 0
+            # for i in range(logits.shape[1] // shot):
+            #     max_response = torch.max(logits[:, i * shot: (i + 1) * shot], dim=1, keepdim=True) # (B, shot) -> # (B, 1)
+            #     max_responses.append(max_response.values)
+            # logits = torch.cat(max_responses, dim=1) # (B, C)
+            ### max response mode end
+            W = self.phi(input.mean(dim=1)) # (C, u)
             W = F.normalize(W, p=2, dim=-1)
-            query = F.normalize(query, p=2, dim=-1)
-            logits = query.matmul(W.transpose(0, 1)) # (B, C * shot)
-            max_responses = []
-            assert logits.shape[1] % shot == 0
-            for i in range(logits.shape[1] // shot):
-                max_response = torch.max(logits[:, i * shot: (i + 1) * shot], dim=1, keepdim=True) # (B, shot) -> # (B, 1)
-                max_responses.append(max_response.values)
-            logits = torch.cat(max_responses, dim=1) # (B, C)
+            logits = query.matmul(W.transpose(0, 1)) # (B, C)
             pred = torch.argmax(logits, 1) # (B,)
 
             if y is None:

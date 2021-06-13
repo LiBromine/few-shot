@@ -268,24 +268,19 @@ def main_worker(args):
         print(mlp_model)
 
         print('Start testing...')
-        pred = inference(args, mlp_model, alexnet, val_loader, test_loader)
+        # pred = inference(args, mlp_model, alexnet, val_loader, test_loader)
+        val_acc, val_loss = valid_epoch(args, mlp_model, alexnet, val_loader)
+        print("  validation loss:               " + str(val_loss))
+        print("  validation accuracy:           " + str(val_acc))
         print('Finish test!')
-        output_path = os.path.join(args.train_dir, args.output)
-        with open(output_path, 'w+') as f:
-            pred = pred.tolist()
-            s = []
-            for y in pred:
-                s.append(str(y + 1))
-            s = '\n'.join(s)
-            f.write(s)
-
-        # count = 0
-        # for i in range(len(X_test)):
-        #     test_image = X_test[i].reshape((1, 3 * 32 * 32))
-        #     result = inference(mlp_model, test_image)[0]
-        #     if result == y_test[i]:
-        #         count += 1
-        # print("test accuracy: {}".format(float(count) / len(X_test)))
+        # output_path = os.path.join(args.train_dir, args.output)
+        # with open(output_path, 'w+') as f:
+        #     pred = pred.tolist()
+        #     s = []
+        #     for y in pred:
+        #         s.append(str(y + 1))
+        #     s = '\n'.join(s)
+        #     f.write(s)
 
 
 if __name__ == '__main__':
